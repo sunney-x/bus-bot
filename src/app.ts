@@ -1,7 +1,12 @@
+import type { InlineQueryResult } from "telegraf/typings/core/types/typegram";
 import { Telegraf } from "telegraf";
-import { fetchBusArrivalTime, fetchBusStopCoordinates } from "./bus";
 import { createClient } from "redis";
 import dotenv from "dotenv";
+import {
+  searchBusStopsForBusNumber,
+  searchNearbyBusStops,
+  distanceBetweenTwoPoints,
+} from "./bus";
 
 dotenv.config();
 
@@ -17,41 +22,61 @@ const redis = createClient({
 
 redis.connect();
 
-bot.command("save", async (ctx) => {
-  const [_, alias, busStopId] = ctx.message.text.split(" ");
-  const coordinates = await fetchBusStopCoordinates(busStopId);
+bot.on("inline_query", async (ctx) => {
+  const { query } = ctx.inlineQuery;
 
-  if (!coordinates) {
-    await ctx.reply("Bus stop not found");
-    return;
+  const location = ctx.inlineQuery.location;
+
+  if (!location) {
+    return ctx.answerInlineQuery(
+      [
+        {
+          thumb_url:
+            "https://media0.giphy.com/media/lSLJ9JCXVzItWCz3WG/giphy.gif?cid=ecf05e471cp8wzq8rcbfom4z017kxre2nbas7m5gssh0y1o5&rid=giphy.gif&ct=g",
+          id: "1",
+          type: "gif",
+          gif_url:
+            "https://media0.giphy.com/media/lSLJ9JCXVzItWCz3WG/giphy.gif?cid=ecf05e471cp8wzq8rcbfom4z017kxre2nbas7m5gssh0y1o5&rid=giphy.gif&ct=g",
+          gif_file_id: "lSLJ9JCXVzItWCz3WG",
+          title: "waiting for location",
+          caption: "waiting for location",
+        },
+      ],
+      {
+        cache_time: 0,
+      }
+    );
   }
 
-  await redis.set(`${alias}:${ctx.message.from.id}`, busStopId);
-  await ctx.reply(`Saved "${alias}"`);
-});
+  const nearbyBusStops = searchNearbyBusStops(
+    location.latitude,
+    location.longitude
+  );
 
-bot.command("bus", async (ctx) => {
-  const [_, busStopIdOrAlias, busNumber] = ctx.message.text.split(" ");
+  const timeTables = (
+    await searchBusStopsForBusNumber(nearbyBusStops, query)
+  ).sort((a, b) => a.distance - b.distance);
 
-  if (!busStopIdOrAlias || !busNumber) {
-    return await ctx.reply("Invalid command");
-  }
-
-  const busStop = isNaN(+busStopIdOrAlias)
-    ? await redis.get(`${busStopIdOrAlias}:${ctx.message.from.id}`)
-    : busStopIdOrAlias;
-
-  if (!busStop) {
-    return await ctx.reply("Bus stop not found");
-  }
-
-  const lastArrivalTime = await fetchBusArrivalTime(busNumber, busStop);
-
-  if (!lastArrivalTime) {
-    return await ctx.reply("No bus found");
-  }
-
-  await ctx.reply(`${busNumber} bus is arriving in ${lastArrivalTime}`);
+  const results = timeTables.map(
+    (timeTable): InlineQueryResult => ({
+      id: timeTable.code,
+      type: "venue",
+      address: `[${query}] ${timeTable.arrivalInfo.destination} ${
+        timeTable.arrivalInfo.arrivalTime
+      }წთ - ${distanceBetweenTwoPoints(
+        location.latitude,
+        location.longitude,
+        timeTable.lat,
+        timeTable.lon
+      )}m`,
+      title: `${timeTable.name}`,
+      latitude: timeTable.lat,
+      longitude: timeTable.lon,
+    })
+  );
+  ctx.answerInlineQuery(results, {
+    cache_time: 0,
+  });
 });
 
 bot.launch();
